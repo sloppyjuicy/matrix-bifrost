@@ -1,6 +1,6 @@
-import { Bridge, MatrixUser, Intent, Logging, WeakEvent, RoomBridgeStoreEntry} from "matrix-appservice-bridge";
+import { Bridge, MatrixUser, Intent, WeakEvent, RoomBridgeStoreEntry, Logger } from "matrix-appservice-bridge";
 import { IBifrostInstance } from "./bifrost/Instance";
-import { MROOM_TYPE_GROUP, MROOM_TYPE_IM, IRemoteGroupData, MUSER_TYPE_GHOST } from "./store/Types";
+import { MROOM_TYPE_GROUP, MROOM_TYPE_IM, IRemoteGroupData, IRemoteRoomData } from "./store/Types";
 import {
     IReceivedImMsg,
     IChatInvite,
@@ -11,6 +11,7 @@ import {
     IChatTyping,
     IStoreRemoteUser,
     IChatReadReceipt,
+    IContactListSubscribeRequest,
 } from "./bifrost/Events";
 import { ProfileSync } from "./ProfileSync";
 import { Util } from "./Util";
@@ -20,7 +21,8 @@ import { Deduplicator } from "./Deduplicator";
 import { Config } from "./Config";
 import { decode as entityDecode } from "html-entities";
 import { MessageFormatter } from "./MessageFormatter";
-const log = Logging.get("MatrixRoomHandler");
+
+const log = new Logger("MatrixRoomHandler");
 
 const ACCOUNT_LOCK_MS = 1000;
 const EVENT_MAPPING_SIZE = 16384;
@@ -29,19 +31,25 @@ const EVENT_MAPPING_SIZE = 16384;
  * Handles creation and handling of rooms.
  */
 export class MatrixRoomHandler {
-    private bridge?: Bridge;
-    private accountRoomLock: Set<string>;
-    private remoteEventIdMapping: Map<string, string>; // remote_id -> event_id
-    private roomCreationLock: Map<string, Promise<RoomBridgeStoreEntry>>;
+    private readonly accountRoomLock = new Set<string>();
+    private readonly remoteEventIdMapping = new Map<string, string>(); // remote_id -> event_id
+    private readonly roomCreationLock = new Map<string, Promise<RoomBridgeStoreEntry>>();
     constructor(
-        private purple: IBifrostInstance,
-        private profileSync: ProfileSync,
-        private store: IStore,
-        private config: Config,
-        private deduplicator: Deduplicator,
+        private readonly purple: IBifrostInstance,
+        private readonly profileSync: ProfileSync,
+        private readonly store: IStore,
+        private readonly config: Config,
+        private readonly deduplicator: Deduplicator,
+        private readonly bridge: Bridge,
     ) {
-        this.accountRoomLock = new Set();
-        this.roomCreationLock = new Map();
+        const handleAsyncEvent = function<Args = unknown, T = unknown>(fn: (...args: Args[]) => Promise<T>): (...args: Args[]) => void {
+            return (...args: Args[]) => {
+                fn(...args).catch(ex => {
+                    log.warn(`Failed to handle event`, ex);
+                })
+            };
+        };
+
         if (this.purple.needsDedupe() || this.purple.needsAccountLock()) {
             purple.on("chat-joined", this.onChatJoined.bind(this));
         }
@@ -62,22 +70,22 @@ export class MatrixRoomHandler {
                 // Not all backends need to invite users to their rooms.
                 return false;
             }
-            const memberlist = Object.keys((await this.bridge.getBot().getJoinedMembers(roomId)));
+            const memberlist = await this.bridge.getIntent().matrixClient.getJoinedRoomMembers(roomId);
             if (!memberlist.includes(matrixUser.getId())) {
                 log.debug(`Invited ${matrixUser.getId()} to a chat they tried to join`);
                 await intent.invite(roomId, matrixUser.getId());
             }
         });
-        purple.on("received-im-msg", this.handleIncomingIM.bind(this));
-        purple.on("received-chat-msg", this.handleIncomingChatMsg.bind(this));
-        purple.on("chat-invite", this.handleChatInvite.bind(this));
-        purple.on("chat-user-joined", this.handleRemoteUserState.bind(this));
-        purple.on("chat-user-left", this.handleRemoteUserState.bind(this));
-        purple.on("chat-user-kick", this.handleRemoteUserState.bind(this));
+        purple.on("received-im-msg", handleAsyncEvent(this.handleIncomingIM.bind(this)));
+        purple.on("received-chat-msg", handleAsyncEvent(this.handleIncomingChatMsg.bind(this)));
+        purple.on("chat-invite", handleAsyncEvent(this.handleChatInvite.bind(this)));
+        purple.on("chat-user-joined", handleAsyncEvent(this.handleRemoteUserState.bind(this)));
+        purple.on("chat-user-left", handleAsyncEvent(this.handleRemoteUserState.bind(this)));
+        purple.on("chat-user-kick", handleAsyncEvent(this.handleRemoteUserState.bind(this)));
         /* This also handles chat names, which are just set as the conv.name */
-        purple.on("chat-topic", this.handleTopic.bind(this));
-        purple.on("im-typing", this.handleIMTyping.bind(this));
-        purple.on("chat-typing", this.handleChatTyping.bind(this));
+        purple.on("chat-topic", handleAsyncEvent(this.handleTopic.bind(this)));
+        purple.on("im-typing", handleAsyncEvent(this.handleIMTyping.bind(this)));
+        purple.on("chat-typing", handleAsyncEvent(this.handleChatTyping.bind(this)));
         purple.on("store-remote-user", (storeUser: IStoreRemoteUser) => {
             log.info(`Storing remote ghost for ${storeUser.mxId} -> ${storeUser.remoteId}`);
             this.store.storeGhost(
@@ -85,20 +93,12 @@ export class MatrixRoomHandler {
                 this.purple.getProtocol(storeUser.protocol_id)!,
                 storeUser.remoteId,
                 storeUser.data,
-            );
+            ).catch((ex) => {
+                log.warn(`Failed to store ghost`, ex);
+            });
         });
-        this.remoteEventIdMapping = new Map();
-        purple.on("read-receipt", this.handleReadReceipt.bind(this));
-    }
-
-    /**
-     * Set the bridge for us to use. This must be called after MatrixEventHandler
-     * has been created.
-     *
-     * @return [description]
-     */
-    public setBridge(bridge: Bridge) {
-        this.bridge = bridge;
+        purple.on("contact-list-subscribe", handleAsyncEvent(this.handleContactListSubscribeRequest.bind(this)));
+        purple.on("read-receipt", handleAsyncEvent(this.handleReadReceipt.bind(this)));
     }
 
     public async onChatJoined(ev: IConversationEvent) {
@@ -188,7 +188,7 @@ export class MatrixRoomHandler {
         intent: Intent,
         getOnly: boolean = false,
         failIfPlumbed: boolean = false,
-    ) {
+    ): Promise<string> {
         let roomName;
         let props;
         if ("join_properties" in data) {
@@ -220,24 +220,23 @@ export class MatrixRoomHandler {
         const remoteEntry = await this.store.getGroupRoomByRemoteData(remoteData);
         if (remoteEntry) {
             if (remoteEntry.remote?.get("plumbed") && failIfPlumbed) {
-                return false;
+                throw new Error('Room was plumbed and failIfPlumbed is enabled');
             }
             return remoteEntry.matrix?.getId();
         }
 
         // This could be that this is the first user to join a gateway room
         // so we should try to create an entry for it ahead of time.
-        if ((data as any).gatewayAlias) {
-            const alias = ((data as any).gatewayAlias);
+        if ('gatewayAlias' in data) {
+            const alias = data.gatewayAlias;
 
             if (!this.bridge) {
-                log.error("Got gateway join request, but bridge was not defined");
-                return;
+                throw new Error('Got gateway join request, but bridge was not defined');
             }
 
             log.info("Request was a gateway request, so attempting to find room and create an entry");
             try {
-                const roomId = (await this.bridge.getIntent().getClient().getRoomIdForAlias(alias)).room_id;
+                const roomId = await this.bridge.getIntent().matrixClient.resolveRoom(alias);
                 remoteData.gateway = true;
                 log.info(`Found ${roomId} for ${alias}`);
                 await this.store.storeRoom(roomId, MROOM_TYPE_GROUP, remoteId, remoteData);
@@ -251,26 +250,25 @@ export class MatrixRoomHandler {
         if (getOnly) {
             throw new Error("Room doesn't exist, refusing to make room");
         }
-
-        const createPromise = new Promise(() => {
+        const createPromise = (async () => {
             // Room doesn't exist yet, create it.
             remoteData = {
                 protocol_id: data.account.protocol_id,
                 room_name: roomName,
                 properties: props ? Util.sanitizeProperties(props) : {}, // for joining
-            } as any;
+            } as IRemoteRoomData;
             log.info(`Couldn't find room for ${roomName}. Creating a new one`);
-            return intent.createRoom({
+            const { room_id } = await intent.createRoom({
                 createAsClient: false,
                 options: {
                     name: roomName,
                     visibility: "private",
                 },
             });
-        }).then((res: any) => {
-            log.debug("Created room with id ", res.room_id);
-            return this.store.storeRoom(res.room_id, MROOM_TYPE_GROUP, remoteId, remoteData);
-        });
+            log.debug("Created room with id ", room_id);
+            return this.store.storeRoom(room_id, MROOM_TYPE_GROUP, remoteId, remoteData);
+        })();
+
         try {
             this.roomCreationLock.set(remoteId, createPromise);
             const result = await createPromise;
@@ -309,7 +307,11 @@ export class MatrixRoomHandler {
         // Update the user if needed.
         const account = this.purple.getAccount(data.account.username, data.account.protocol_id, matrixUser.getId());
         if (account) {
-            await this.profileSync.updateProfile(protocol, data.sender, account);
+            try {
+                await this.profileSync.updateProfile(protocol, data.sender, account);
+            } catch (e) {
+                log.error(`Failed to update profile: ${e}`);
+            }
         }
 
         const intent = this.bridge.getIntent(senderMatrixUser.getId());
@@ -366,7 +368,7 @@ export class MatrixRoomHandler {
             return;
         }
         const remoteId = Util.createRemoteId(data.account.protocol_id, data.sender);
-        if (this.purple.needsDedupe() && this.deduplicator.checkAndRemove(
+        if (this.purple.needsDedupe() && await this.deduplicator.checkAndRemove(
             data.conv.name,
             remoteId,
             data.message.body,
@@ -377,7 +379,6 @@ export class MatrixRoomHandler {
         if (this.purple.needsDedupe() && !this.deduplicator.isTheChosenOneForRoom(data.conv.name, acctId)) {
             return;
         }
-        // this.purple.getBuddyFromChat(data.conv, data.sender);
         // If multiple of our users are in this room, it may dupe up here.
         const protocol = this.purple.getProtocol(data.account.protocol_id);
         if (!protocol) {
@@ -391,13 +392,17 @@ export class MatrixRoomHandler {
         );
         const account = this.purple.getAccount(data.account.username, data.account.protocol_id);
         if (account) {
-            await this.profileSync.updateProfile(
-                protocol,
-                data.sender,
-                account,
-                false,
-                ProtoHacks.getSenderIdToLookup(protocol, data.sender, data.conv.name),
-            );
+            try {
+                await this.profileSync.updateProfile(
+                    protocol,
+                    data.sender,
+                    account,
+                    false,
+                    ProtoHacks.getSenderIdToLookup(protocol, data.sender, data.conv.name),
+                );
+            } catch (e) {
+                log.error(`Failed to update profile: ${e}`);
+            }
         }
 
         const intent = this.bridge.getIntent(senderMatrixUser.getId());
@@ -489,7 +494,13 @@ export class MatrixRoomHandler {
             this.config.bridge.userPrefix,
         ) : senderMatrixUser;
         const intent = this.bridge.getIntent(intentUser.userId);
-        const roomId = await this.createOrGetGroupChatRoom(data, intent, true);
+        let roomId: string;
+        try {
+            roomId = await this.createOrGetGroupChatRoom(data, intent, true);
+        } catch (ex) {
+            log.error('Failed to handleRemoteUserState', ex);
+            return;
+        }
         const account = this.purple.getAccount(data.account.username, data.account.protocol_id);
         // Do we need to set a profile before we can join to avoid uglyness?
         const profileNeeded = this.config.tuning.waitOnProfileBeforeSend &&
@@ -523,9 +534,12 @@ export class MatrixRoomHandler {
         }
         const intent = this.bridge.getIntent();
         log.info(`Setting topic for ${data.conv.name}: ${data.topic}`);
-        const roomId = await this.createOrGetGroupChatRoom(data, intent, true, true);
-        if (roomId === false) {
-            log.info("Room does not support setting topic");
+        let roomId;
+        try {
+            roomId = await this.createOrGetGroupChatRoom(data, intent, true, true);
+        } catch (ex) {
+            log.info(`Room ${roomId} does not support setting topic`, ex);
+            return;
         }
         const state = await intent.roomState(roomId) as WeakEvent[];
         const topicEv = state.find((ev) => ev.type === "m.room.topic");
@@ -596,5 +610,11 @@ export class MatrixRoomHandler {
         }
         await intent.sendReadReceipt(roomId, eventId);
         log.debug(`Updated read reciept for ${userId} in ${roomId}`);
+    }
+
+    private async handleContactListSubscribeRequest(data: IContactListSubscribeRequest) {
+        log.info(`Got contact list sub request from ${data.sender} -> ${data.account}`);
+        // TODO: Make this optional to the user.
+        data.cb(true);
     }
 }

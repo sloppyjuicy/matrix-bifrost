@@ -1,53 +1,47 @@
-import { Bridge, RemoteUser, MatrixUser, Request, WeakEvent, RoomBridgeStoreEntry, UserMembership, TypingEvent } from "matrix-appservice-bridge";
+import { Bridge, MatrixUser, Request, WeakEvent, RoomBridgeStoreEntry, TypingEvent, PresenceEvent, MediaProxy } from "matrix-appservice-bridge";
 import { MatrixMembershipEvent, MatrixMessageEvent } from "./MatrixTypes";
 import { MROOM_TYPE_UADMIN, MROOM_TYPE_IM, MROOM_TYPE_GROUP,
-    IRemoteUserAdminData } from "./store/Types";
+    IRemoteUserAdminData,
+    IRemoteGroupData,
+    IRemoteImData} from "./store/Types";
 import { BifrostProtocol } from "./bifrost/Protocol";
 import { IBifrostInstance } from "./bifrost/Instance";
-import marked from "marked";
+import { Marked } from "marked";
 import { IBifrostAccount } from "./bifrost/Account";
 import { Util } from "./Util";
-import { Logging } from "matrix-appservice-bridge";
+import { Logger } from "matrix-appservice-bridge";
 import { Deduplicator } from "./Deduplicator";
 import { AutoRegistration } from "./AutoRegistration";
 import { Config } from "./Config";
 import { IStore } from "./store/Store";
-import { IAccountEvent, IChatJoinProperties, IChatJoined, IConversationEvent } from "./bifrost/Events";
+import { IAccountEvent, IChatJoinProperties, IConversationEvent } from "./bifrost/Events";
 import { ProtoHacks } from "./ProtoHacks";
 import { RoomAliasSet } from "./RoomAliasSet";
 import { MessageFormatter } from "./MessageFormatter";
 import { GatewayHandler } from "./GatewayHandler";
 import { BifrostRemoteUser } from "./store/BifrostRemoteUser";
-const log = Logging.get("MatrixEventHandler");
+
+const log = new Logger("MatrixEventHandler");
+const marked = new Marked();
 
 /**
  * Handles events coming into the appservice.
  */
 export class MatrixEventHandler {
-    private bridge?: Bridge;
-    private autoReg: AutoRegistration | null = null;
-    private roomAliases: RoomAliasSet;
-    private pendingRoomAliases: Map<string, {protocol: BifrostProtocol, props: IChatJoinProperties}>;
+    private readonly roomAliases: RoomAliasSet;
+    private readonly pendingRoomAliases: Map<string, {protocol: BifrostProtocol, props: IChatJoinProperties}>;
     constructor(
-        private purple: IBifrostInstance,
-        private store: IStore,
-        private deduplicator: Deduplicator,
-        private config: Config,
-        private gatewayHandler: GatewayHandler,
+        private readonly purple: IBifrostInstance,
+        private readonly store: IStore,
+        private readonly deduplicator: Deduplicator,
+        private readonly config: Config,
+        private readonly gatewayHandler: GatewayHandler,
+        private readonly bridge: Bridge,
+        private readonly mediaProxy: MediaProxy,
+        private readonly autoReg: AutoRegistration|null = null,
     ) {
         this.roomAliases = new RoomAliasSet(this.config.portals, this.purple);
         this.pendingRoomAliases = new Map();
-    }
-
-    /**
-     * Set the bridge for us to use. This must be called after MatrixEventHandler
-     * has been created.
-     *
-     * @return [description]
-     */
-    public setBridge(bridge: Bridge, autoReg?: AutoRegistration) {
-        this.bridge = bridge;
-        this.autoReg = autoReg || null;
     }
 
     public async onAliasQuery(alias: string, aliasLocalpart: string) {
@@ -105,11 +99,11 @@ export class MatrixEventHandler {
         log.info(`onAliasQueried:`, alias, roomId);
         const {protocol, props} = this.pendingRoomAliases.get(alias)!;
         this.pendingRoomAliases.delete(alias);
-        const remoteData = {
+        const remoteData: IRemoteGroupData = {
             protocol_id: protocol.id,
             room_name: ProtoHacks.getRoomNameFromProps(protocol.id, props),
             properties: Util.sanitizeProperties(props), // for joining
-        } as any;
+        } as IRemoteGroupData;
         const remoteId = Buffer.from(
             `${protocol.id}:${remoteData.room_name}`,
         ).toString("base64");
@@ -161,11 +155,11 @@ export class MatrixEventHandler {
                     protocol,
                 } = this.purple.getUsernameFromMxid(event.state_key!, this.config.bridge.userPrefix);
                 log.debug("Mapped username to", username);
-                const remoteData = {
+                const remoteData: IRemoteImData = {
                     matrixUser: event.sender,
                     protocol_id: protocol.id,
                     recipient: username,
-                } as any;
+                } as IRemoteImData;
                 const ghostIntent = this.bridge.getIntent(event.state_key);
                 // If the join fails to join because it's not registered, it tries to get invited which will fail.
                 log.debug(`Joining ${event.state_key} to ${event.room_id}.`);
@@ -279,6 +273,25 @@ export class MatrixEventHandler {
         acct.sendIMTyping(recipient, isUserTyping);
     }
 
+    async onPresence(req: Request<PresenceEvent>) {
+        const data = req.getData();
+        const remoteUsers = await this.store.getAllAccountsForMatrixUser(data.sender);
+        for (const remoteUser of remoteUsers) {
+            try {
+                log.debug(`Sending presence on behalf of Matrix user via ${remoteUser.protocolId}:${remoteUser.username}`);
+                const account = this.purple.getAccount(remoteUser.username, remoteUser.protocolId);
+                const allInterestedUsers = (
+                    await this.store.getAllIMRoomsForAccount(data.sender, account.protocol.id)
+                ).map((r) => r.remote.get<string>('recipient'));
+                if (account?.setPresence) {
+                    account.setPresence(data.content, allInterestedUsers);
+                }
+            } catch (ex) {
+                log.warn(`Failed to handle presence update for ${data.sender} via account ${remoteUser.protocolId}:${remoteUser.username}`, ex);
+            }
+        }
+    }
+
     /* NOTE: Command handling should really be it's own class, but I am cutting corners.*/
     private async handleCommand(args: string[], event: WeakEvent) {
         if (!this.bridge) {
@@ -298,7 +311,7 @@ export class MatrixEventHandler {
                 msgtype: "m.notice",
                 body,
                 format: "org.matrix.custom.html",
-                formatted_body: marked(body),
+                formatted_body: marked.parse(body),
             });
         } else if (args[0] === "accounts" && args.length === 1) {
             const users = await this.store.getRemoteUsersFromMxId(event.sender) || [];
@@ -320,7 +333,7 @@ export class MatrixEventHandler {
                 msgtype: "m.notice",
                 body,
                 format: "org.matrix.custom.html",
-                formatted_body: marked(body),
+                formatted_body: marked.parse(body),
             });
         } else if (args[0] === "accounts" && args[1] === "add") {
             try {
@@ -392,7 +405,7 @@ export class MatrixEventHandler {
                 msgtype: "m.notice",
                 body,
                 format: "org.matrix.custom.html",
-                formatted_body: marked(body),
+                formatted_body: marked.parse(body),
             });
         } else {
             await intent.sendMessage(event.room_id, {
@@ -445,12 +458,12 @@ export class MatrixEventHandler {
                         log.warn("Failed to join chat for plumbing:", ex);
                         throw Error("Failed to join chat");
                     }
-                    const remoteData = {
+                    const remoteData: IRemoteGroupData = {
                         protocol_id: acct.protocol.id,
                         room_name: res.conv.name,
                         plumbed: true,
                         properties: Util.sanitizeProperties(paramSet), // for joining
-                    } as any;
+                    } as IRemoteGroupData;
                     const remoteId = Buffer.from(
                         `${acct.protocol.id}:${res.conv.name}`,
                     ).toString("base64");
@@ -597,7 +610,7 @@ Say \`help\` for more commands.
         }
         const recipient: string = context.remote.get("recipient");
         log.info(`Sending IM to ${recipient}`);
-        const msg = MessageFormatter.matrixEventToBody(event as MatrixMessageEvent, this.config.bridge);
+        const msg = await MessageFormatter.matrixEventToBody(event as MatrixMessageEvent, this.config.bridge, this.mediaProxy);
         acct.sendIM(recipient, msg);
     }
 
@@ -613,12 +626,16 @@ Say \`help\` for more commands.
         const isGateway: boolean = context.remote.get("gateway");
         const name: string = context.remote.get("room_name");
         if (isGateway) {
-            const msg = MessageFormatter.matrixEventToBody(event as MatrixMessageEvent, this.config.bridge);
-            this.gatewayHandler.sendMatrixMessage(name, event.sender, msg, context);
+            const msg = await MessageFormatter.matrixEventToBody(event as MatrixMessageEvent, this.config.bridge, this.mediaProxy);
+            try {
+                await this.gatewayHandler.sendMatrixMessage(name, event.sender, msg, context);
+            } catch (ex) {
+                log.warn(`Failed to handle message for gateway:`, ex);
+            }
             return;
         }
         try {
-            const {acct, newAcct} = await this.getAccountForMxid(event.sender, roomProtocol);
+            const {acct} = await this.getAccountForMxid(event.sender, roomProtocol);
             log.info(`Got ${acct.name} for ${event.sender}`);
             if (!acct.isInRoom(name)) {
                 log.debug(`${event.sender} talked in ${name}, joining them.`);
@@ -629,15 +646,15 @@ Say \`help\` for more commands.
                 await this.joinOrDefer(acct, name, props);
             }
             const roomName: string = context.remote.get("room_name");
-            const msg = MessageFormatter.matrixEventToBody(event as MatrixMessageEvent, this.config.bridge);
+            const msg = await MessageFormatter.matrixEventToBody(event as MatrixMessageEvent, this.config.bridge, this.mediaProxy);
             let nick = "";
             // XXX: Gnarly way of trying to determine who we are.
             try {
-                const conv = acct.getConversation(roomName);
+                const conv = acct.getConversation && acct.getConversation(roomName);
                 if (!conv) {
-                    throw Error();
+                    throw Error("Could not find conversation");
                 }
-                nick = conv ? this.purple.getNickForChat(conv) || acct.name : acct.name;
+                nick = conv && this.purple.getNickForChat ? this.purple.getNickForChat(conv) || acct.name : acct.name;
             } catch (ex) {
                 nick = acct.name;
             }
@@ -677,9 +694,13 @@ Say \`help\` for more commands.
         const name: string = context.remote.get("room_name");
         const roomProtocol: string = context.remote.get("protocol_id");
         if (isGateway) {
-            await this.gatewayHandler.sendMatrixMembership(
-                name, context, event,
-            );
+            try {
+                await this.gatewayHandler.sendMatrixMembership(
+                    name, context, event,
+                );
+            } catch (ex) {
+                log.warn(`Failed to handle membership for gateway:`, ex);
+            }
             return;
         }
 
@@ -716,9 +737,13 @@ Say \`help\` for more commands.
         const name = context.remote.get<string>("room_name");
         log.info(`Handling group state event for ${name}`);
         if (isGateway) {
-            await this.gatewayHandler.sendStateEvent(
-                name, event.sender, event, context,
-            );
+            try {
+                await this.gatewayHandler.sendStateEvent(
+                    name, event.sender, event, context,
+                );
+            } catch (ex) {
+                log.warn(`Failed to handle state event for gateway:`, ex);
+            }
             return;
         }
         // XXX: Support state changes for non-gateways
@@ -790,7 +815,7 @@ E.g. \`${command} ${acct.protocol.id}\` ${required.join(" ")} ${optional.join(" 
                 msgtype: "m.notice",
                 body,
                 format: "org.matrix.custom.html",
-                formatted_body: marked(body),
+                formatted_body: marked.parse(body),
             });
             return null;
         }
@@ -828,29 +853,31 @@ E.g. \`${command} ${acct.protocol.id}\` ${required.join(" ")} ${optional.join(" 
         return paramSet;
     }
 
-    private joinOrDefer(acct: IBifrostAccount, name: string, properties: IChatJoinProperties): Promise<void> {
-        if (!acct.connected) {
-            log.debug("Account is not connected, deferring join until connected");
-            return new Promise((resolve, reject) => {
-                let cb = null;
-                cb = (joinEvent: IAccountEvent) => {
-                    if (joinEvent.account.username === acct.name &&
-                        acct.protocol.id === joinEvent.account.protocol_id) {
-                        log.debug("Account signed in, joining room");
-                        const p = acct.joinChat(properties, this.purple, 5000) as Promise<any>;
-                        acct.setJoinPropertiesForRoom(name, properties);
-                        this.purple.removeListener("account-signed-on", cb);
-                        resolve(p);
-                    }
-                };
-                this.purple.on("account-signed-on", cb);
-            });
-
-        } else {
-            acct.joinChat(properties);
-            acct.setJoinPropertiesForRoom(name, properties);
-            return Promise.resolve();
+    private async joinOrDefer(acct: IBifrostAccount, name: string, properties: IChatJoinProperties): Promise<void> {
+        if (acct.connected) {
+            await acct.joinChat(properties);
+            acct.setJoinPropertiesForRoom?.(name, properties);
+            return;
         }
+        log.debug("Account is not connected, deferring join until connected");
+        const joinEvent = await new Promise<IAccountEvent>((resolve, reject) => {
+            let fn;
+            // eslint-disable-next-line prefer-const
+            fn = (ev: IAccountEvent) => {
+                if (ev.account.username === acct.name &&
+                    acct.protocol.id === ev.account.protocol_id) {
+                    resolve(joinEvent);
+                }
+                this.purple.off("account-signed-on", fn);
+            }
+            setTimeout(() => {
+                reject(new Error('Timed out waiting for join'));
+                this.purple.off("account-signed-on", fn);
+            }, 60000);
+        });
+        log.debug("Account signed in, joining room");
+        acct.setJoinPropertiesForRoom?.(name, properties);
+        await acct.joinChat(properties, this.purple, 5000);
     }
 
     private async getAccountForMxid(sender: string, protocol: string,

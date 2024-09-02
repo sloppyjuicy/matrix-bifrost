@@ -18,10 +18,14 @@ const intent = {
     }),
 } as any;
 
+const mediaProxy = {
+    generateMediaUrl: () => Promise.resolve('http://mediaproxy/token'),
+} as any;
+
 describe("MessageFormatter", () => {
     describe("matrixEventToBody", () => {
-        it("should transform a plain text message to a basic body", () => {
-            const msg = MessageFormatter.matrixEventToBody({
+        it("should transform a plain text message to a basic body", async () => {
+            const msg = await MessageFormatter.matrixEventToBody({
                 sender: "@foo:bar",
                 event_id: "$event:bar",
                 content: {
@@ -35,15 +39,16 @@ describe("MessageFormatter", () => {
                 domain: "bar",
                 homeserverUrl: "http://bar",
                 userPrefix: "_xmpp",
-            });
+                mediaProxy: {} as any,
+            }, mediaProxy);
             expect(msg).to.deep.eq({
                 body: "This is some plaintext!",
                 formatted: [],
                 id: "$event:bar",
             });
         });
-        it("should transform a formatted message", () => {
-            const msg = MessageFormatter.matrixEventToBody({
+        it("should transform a formatted message", async () => {
+            const msg = await MessageFormatter.matrixEventToBody({
                 sender: "@foo:bar",
                 event_id: "$event:bar",
                 content: {
@@ -59,7 +64,8 @@ describe("MessageFormatter", () => {
                 domain: "bar",
                 homeserverUrl: "http://bar",
                 userPrefix: "_xmpp",
-            });
+                mediaProxy: {} as any,
+            }, mediaProxy);
             expect(msg).to.deep.eq({
                 body: "This is some plaintext!",
                 formatted: [{
@@ -69,8 +75,8 @@ describe("MessageFormatter", () => {
                 id: "$event:bar",
             });
         });
-        it("should transform an info-less media event", () => {
-            const msg = MessageFormatter.matrixEventToBody({
+        it("should transform an info-less media event", async () => {
+            const msg = await MessageFormatter.matrixEventToBody({
                 sender: "@foo:bar",
                 event_id: "$event:bar",
                 content: {
@@ -85,7 +91,8 @@ describe("MessageFormatter", () => {
                 domain: "bar",
                 homeserverUrl: "http://bar",
                 userPrefix: "_xmpp",
-            });
+                mediaProxy: {} as any,
+            }, mediaProxy);
             expect(msg).to.deep.eq({
                 body: "image.jpg",
                 opts: {
@@ -93,15 +100,15 @@ describe("MessageFormatter", () => {
                         {
                             mimetype: undefined,
                             size: undefined,
-                            uri: "http://bar/_matrix/media/v1/download/bar/foosdsd",
+                            uri: "http://mediaproxy/token",
                         },
                     ],
                 },
                 id: "$event:bar",
             });
         });
-        it("should transform a media event", () => {
-            const msg = MessageFormatter.matrixEventToBody({
+        it("should transform a media event", async () => {
+            const msg = await MessageFormatter.matrixEventToBody({
                 sender: "@foo:bar",
                 event_id: "$event:bar",
                 content: {
@@ -120,7 +127,8 @@ describe("MessageFormatter", () => {
                 domain: "bar",
                 homeserverUrl: "http://bar",
                 userPrefix: "_xmpp",
-            });
+                mediaProxy: {} as any,
+            }, mediaProxy);
             expect(msg).to.deep.eq({
                 body: "image.jpg",
                 opts: {
@@ -128,15 +136,15 @@ describe("MessageFormatter", () => {
                         {
                             mimetype: "image/jpeg",
                             size: 1000,
-                            uri: "http://bar/_matrix/media/v1/download/bar/foosdsd",
+                            uri: "http://mediaproxy/token",
                         },
                     ],
                 },
                 id: "$event:bar",
             });
         });
-        it("should transform a emote message to a basic body", () => {
-            const msg = MessageFormatter.matrixEventToBody({
+        it("should transform a emote message to a basic body", async () => {
+            const msg = await MessageFormatter.matrixEventToBody({
                 sender: "@foo:bar",
                 event_id: "$event:bar",
                 content: {
@@ -150,7 +158,8 @@ describe("MessageFormatter", () => {
                 domain: "bar",
                 homeserverUrl: "http://bar",
                 userPrefix: "_xmpp",
-            });
+                mediaProxy: {} as any,
+            }, mediaProxy);
             expect(msg).to.deep.eq({
                 body: "/me pets the dog",
                 formatted: [],

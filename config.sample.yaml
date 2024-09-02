@@ -5,10 +5,20 @@ bridge:
   homeserverUrl: "http://localhost:8008"
   # Prefix of all users of the bridge.
   userPrefix: "_bifrost_"
-  # If homeserverUrl is not reachable publically, the public address that media can be reached on.
-  # mediaserverUrl: "http://example.com:8008"
   # Set this to the port you want the bridge to listen on.
   appservicePort: 9555
+  # Config for the media proxy
+  # required to serve publically accessible URLs to authenticated Matrix media
+  mediaProxy:
+    # To generate a .jwk file:
+    # $ node src/generate-signing-key.js > signingkey.jwk
+    signingKeyPath: "signingkey.jwk"
+    # How long should the generated URLs be valid for
+    ttlSeconds: 3600
+    # The port for the media proxy to listen on
+    bindPort: 11111
+    # The publically accessible URL to the media proxy
+    publicUrl: "https://bifrost.bridge/media"
 
 roomRules: []
 # - room: "#badroom:example.com"
@@ -37,6 +47,9 @@ purple:
     domain: "matrix.localhost"
     # password needed by the component.
     password: "jam"
+    jingle:
+      # Automatically download files from Jingle file transfers. Unsafe for untrusted networks.
+      autodownload: false
 
   # Default settings to set for new accounts, useful for node-purple. NOT used for xmpp.js
   # defaultAccountSettings:
@@ -83,14 +96,14 @@ portals:
   # List of regexes to match a alias that can be turned into a bridge.
   aliases:
     # This matches #_bifrost_ followed by anything
-    "/^_bifrost_(.+)$/":
+    "^_bifrost_(.+)$":
       # Use the xmpp-js protocol.
       protocol: "xmpp-js"
       properties:
         # Set room to the first regex match
         room: "regex:1"
         # Set the server to be conf.localhost
-        server: "regex:2"
+        server: "conf.localhost"
       
 
 # Automatically register users with accounts if they join/get invited

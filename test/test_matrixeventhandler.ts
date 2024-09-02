@@ -1,4 +1,4 @@
-// tslint:disable: no-any
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import * as Chai from "chai";
 import { MatrixEventHandler } from "../src/MatrixEventHandler";
 import { mockStore } from "./mocks/store";
@@ -50,9 +50,9 @@ function createMEH() {
 
             },
             join: () => { /* empty */ },
-            getClient: () => ({
+            matrixClient: {
                 getUserId: () => userId,
-                _createMessagesRequest: () => Promise.resolve({
+                doRequest: () => Promise.resolve({
                     chunk: [{
                         type: "m.room.message",
                         event_id: "$1:localhost",
@@ -67,7 +67,7 @@ function createMEH() {
                         event_id: "$3:localhost",
                     }],
                 }),
-            }),
+            },
         }),
     };
     const meh = new MatrixEventHandler(
@@ -76,8 +76,9 @@ function createMEH() {
         new Deduplicator(),
         config,
         gatewayHandler as any,
+        bridge as any,
+        {} as any,
     );
-    meh.setBridge(bridge as any);
     return {meh, store};
 }
 

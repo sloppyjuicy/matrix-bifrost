@@ -1,3 +1,107 @@
+1.0.3 (2024-02-23)
+==================
+
+Bugfixes
+--------
+
+- Fix several cases where Bifrost may crash if a gateway room was inaccessible. ([\#355](https://github.com/matrix-org/matrix-bifrost/issues/355))
+- Catch errors when profile updates fail. Notably, prevent fatal errors when an inbound displayname change fails. ([\#359](https://github.com/matrix-org/matrix-bifrost/issues/359))
+
+
+1.0.2 (2024-01-12)
+==================
+
+Bugfixes
+--------
+
+- Fix docker image containing extra dependencies. ([\#353](https://github.com/matrix-org/matrix-bifrost/issues/353))
+
+
+1.0.1 (2024-01-12)
+==================
+
+Internal Changes
+----------------
+
+- Log precise error when failing to connect to homeserver on startup. ([\#344](https://github.com/matrix-org/matrix-bifrost/issues/344))
+- Replace several packages with core node APIs. ([\#345](https://github.com/matrix-org/matrix-bifrost/issues/345))
+- Reduce docker image size by removing unused packages. ([\#346](https://github.com/matrix-org/matrix-bifrost/issues/346))
+
+
+1.0.0 (2024-01-08)
+==================
+
+Deprecations and Removals
+-------------------------
+
+- Drop support for Node 16, and support Node 20 and 21. ([\#343](https://github.com/matrix-org/matrix-bifrost/issues/343))
+
+
+Internal Changes
+----------------
+
+- Upgrade json5 (development dependency) to 1.0.2 to fix prototype pollution vulnerability. ([\#328](https://github.com/matrix-org/matrix-bifrost/issues/328))
+
+
+0.4.2 (2022-12-01)
+==================
+
+Bugfixes
+--------
+
+- Fix being unable to join XMPP MUCs via Matrix room aliases. ([\#323](https://github.com/matrix-org/matrix-bifrost/issues/323))
+
+
+0.4.1 (2022-11-16)
+===================
+
+Bugfixes
+--------
+
+- Fix crash on startup due to logging / metrics failures. ([\#321](https://github.com/matrix-org/matrix-bifrost/issues/321))
+
+
+0.4.0 (2022-11-07)
+===================
+
+This release requires **Node.JS 16** or greater.
+
+Features
+--------
+
+- Add support for Jingle file uploads, presence, IM typing notifications for the XMPP backend. ([\#288](https://github.com/matrix-org/matrix-bifrost/issues/288))
+- Include attachment URLs (if present) with libpurple-bridged messages ([\#290](https://github.com/matrix-org/matrix-bifrost/issues/290))
+
+
+Bugfixes
+--------
+
+- Fix an issue where Bifrost could not register users (by upgrading to matrix-appservice-bridge@2.6.0) ([\#246](https://github.com/matrix-org/matrix-bifrost/issues/246))
+- Don't log pings being sent before they're actually sent ([\#260](https://github.com/matrix-org/matrix-bifrost/issues/260))
+- Make XMPP connection handling more resilient ([\#264](https://github.com/matrix-org/matrix-bifrost/issues/264))
+- Fix message formatter sometimes producing invalid HTML ([\#286](https://github.com/matrix-org/matrix-bifrost/issues/286))
+- correct typo of pluginDir in sample config/doc ([\#302](https://github.com/matrix-org/matrix-bifrost/issues/302))
+
+
+Deprecations and Removals
+-------------------------
+
+- The minimum supported version of node.js is now 16. ([\#315](https://github.com/matrix-org/matrix-bifrost/issues/315))
+
+
+Internal Changes
+----------------
+
+- Optimize updateMatrixMemberListForRoom() ([\#243](https://github.com/matrix-org/matrix-bifrost/issues/243))
+- Migrate to `eslint` for linting. ([\#262](https://github.com/matrix-org/matrix-bifrost/issues/262))
+- Sanity check that the homeserver can reach the bridge on startup. ([\#266](https://github.com/matrix-org/matrix-bifrost/issues/266))
+- Update dependencies including `axios`, `prom-client` and `uuid`. The handling of entities in XMPP messages is now XML compliant rather than HTML5 complaint. ([\#267](https://github.com/matrix-org/matrix-bifrost/issues/267))
+- Add new store function `getAdminRoom` and rename `getRoomByRemoteData` -> `getGroupRoomByRemoteData` ([\#272](https://github.com/matrix-org/matrix-bifrost/issues/272))
+- Speed up joins for large rooms from XMPP gateways, preventing them from locking up the process ([\#293](https://github.com/matrix-org/matrix-bifrost/issues/293))
+- Docker images are now automatically build and published via GitHub Actions, replacing DockerHub Autobuilds. ([\#295](https://github.com/matrix-org/matrix-bifrost/issues/295))
+- Use GitHub actions for CI. ([\#316](https://github.com/matrix-org/matrix-bifrost/issues/316))
+
+
 0.3.0 (2021-04-26)
 ==================
 

@@ -4,7 +4,6 @@
 
 import { IBifrostAccount } from "./Account";
 import { IBasicProtocolMessage } from "../MessageFormatter";
-import { IGatewayRoom } from "./Gateway";
 import { IPublicRoomsResponse } from "../MatrixTypes";
 
 export interface IChatJoinProperties {[key: string]: string; }
@@ -24,6 +23,7 @@ export interface IConversationMinimal {
 
 export interface IAccountEvent extends IEventBody {
     account: any|IAccountMinimal;
+    mxid?: string;
 }
 
 export interface IConversationEvent extends IAccountEvent {
@@ -109,4 +109,9 @@ export interface IStoreRemoteUser {
     remoteId: string;
     protocol_id: string;
     data?: any;
+}
+
+export interface IContactListSubscribeRequest extends IAccountEvent {
+    sender: string;
+    cb: (accept: boolean) => Promise<void>;
 }

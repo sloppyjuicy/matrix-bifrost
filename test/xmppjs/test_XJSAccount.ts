@@ -1,4 +1,4 @@
-// tslint:disable: no-any
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import * as Chai from "chai";
 import { XmppJsAccount } from "../../src/xmppjs/XJSAccount";
 import { IBasicProtocolMessage } from "../../src/MessageFormatter";
@@ -39,6 +39,8 @@ describe("XJSAccount", () => {
             } as IBasicProtocolMessage);
             expect(instance.sentMessageIDs).to.include("12345");
             expect(instance.sentMessages[0]).to.deep.equal({
+                chatstate: undefined,
+                replacesId: undefined,
                 hFrom: "bob@matrix.localhost/matrix-bridge",
                 hTo: "alice@remote.server",
                 messageType: "chat",
@@ -65,7 +67,8 @@ describe("XJSAccount", () => {
                 await acct.joinChat({
                     room: "den",
                     server: "remote.server",
-                }, instance as any, 50, true);
+                // Explicit any - we want to deliberately send wrong params
+                } as any, instance as any, 50, true);
             } catch (ex) {
                 expect(ex.message).to.equal("Missing handle");
                 return;

@@ -5,7 +5,7 @@
 // @ts-ignore - These are optional.
 import { buddy, accounts, messaging, Buddy, Account, Conversation, notify, TypingState } from "node-purple";
 import { promises as fs } from "fs";
-import { Logging } from "matrix-appservice-bridge";
+import { Logger } from "matrix-appservice-bridge";
 import { BifrostProtocol } from "../bifrost/Protocol";
 import { IChatJoinProperties, IUserInfo, IConversationEvent } from "../bifrost/Events";
 import { IBasicProtocolMessage } from "../MessageFormatter";
@@ -13,7 +13,9 @@ import { Util } from "../Util";
 import { IBifrostInstance } from "../bifrost/Instance";
 import { IBifrostAccount } from "../bifrost/Account";
 
-const log = Logging.get("PurpleAccount");
+const log = new Logger("PurpleAccount");
+
+export type PurpleAccountHandle = unknown;
 
 export interface IChatJoinOptions {
     identifier: string;
@@ -26,7 +28,7 @@ export class PurpleAccount implements IBifrostAccount {
     private enabled: boolean;
     private waitingJoinRoomProperties: IChatJoinProperties | undefined;
     private joinPropertiesForRooms: Map<string, IChatJoinProperties>;
-    private userAccountInfoPromises: Map<string, () => any>;
+    private userAccountInfoPromises: Map<string, (IUserInfo) => void>;
     constructor(private username: string, public readonly protocol: BifrostProtocol) {
         this.enabled = false;
         this.userAccountInfoPromises = new Map();
@@ -46,7 +48,7 @@ export class PurpleAccount implements IBifrostAccount {
 
     get name(): string { return this.acctData!.username; }
 
-    get handle(): External { return this.acctData!.handle; }
+    get handle(): PurpleAccountHandle { return this.acctData!.handle; }
 
     get isEnabled(): boolean { return this.enabled; }
 
@@ -68,7 +70,7 @@ export class PurpleAccount implements IBifrostAccount {
         let body = msg.body;
 
         if (msg.opts?.attachments) {
-            body += " " + msg.opts.attachments.map(a => a.uri).join(', ');
+            body += " " + msg.opts.attachments.map(a => 'uri' in a ? a.uri : null).filter(a => !!a).join(', ');
         }
 
         messaging.sendIM(this.handle, recipient, body);
@@ -142,7 +144,7 @@ export class PurpleAccount implements IBifrostAccount {
     public passUserInfoResponse(uinfo: IUserInfo) {
         const resolve = this.userAccountInfoPromises.get(uinfo.who);
         if (resolve) {
-            resolve()(uinfo);
+            resolve(uinfo);
         }
     }
 
@@ -154,9 +156,9 @@ export class PurpleAccount implements IBifrostAccount {
         notify.get_user_info(this.handle, who);
         return new Promise ((resolve, reject) => {
             const id = setTimeout(reject, 10000);
-            this.userAccountInfoPromises.set(who, () => {
+            this.userAccountInfoPromises.set(who, (info) => {
                 clearTimeout(id);
-                return resolve;
+                resolve(info);
             });
         });
     }

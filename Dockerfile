@@ -1,23 +1,23 @@
-# Build node-purple. We need buster for python3.6, which is needed for node-purple
-FROM node:14-buster as builder
+# Build node-purple. We need debian for python3.6, which is needed for node-purple
+FROM node:20-bookworm as builder
 COPY ./package.json ./package.json
 COPY ./yarn.lock ./yarn.lock
 COPY ./src ./src
 COPY ./tsconfig.json ./tsconfig.json
 
 # node-purple dependencies
-RUN apt-get update && apt-get install -y libpurple0 libpurple-dev libglib2.0-dev python3 git build-essential
+RUN apt-get update && apt-get install --no-install-recommends -y libpurple0 libpurple-dev libglib2.0-dev python3 git build-essential
 # This will build the optional dependency node-purple AND compile the typescript.
 RUN yarn install --frozen-lockfile --check-files
 
 # App
-FROM node:14-buster-slim
+FROM node:20-bookworm-slim
 
 RUN mkdir app
 WORKDIR /app
 
 # Install node-purple runtime dependencies.
-RUN apt-get update && apt-get install -y libpurple0 pidgin-sipe
+RUN apt-get update && apt-get install --no-install-recommends -y libpurple0 pidgin-sipe
 COPY ./package.json /app/package.json
 COPY ./yarn.lock /app/yarn.lock
 
@@ -39,6 +39,7 @@ VOLUME [ "/data" ]
 ENV LD_PRELOAD="/usr/lib/libpurple.so.0"
 
 ENTRYPOINT [ "node", \
+	"--enable-source-maps", \
 	"/app/lib/Program.js", \
 	"--port", "5000", \
 	"--config", "/data/config.yaml", \

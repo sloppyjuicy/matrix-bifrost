@@ -1,6 +1,6 @@
 /* eslint-disable no-underscore-dangle */
 import { Bridge, MatrixRoom, RemoteRoom, RemoteUser,
-    MatrixUser, UserBridgeStore, RoomBridgeStore, Logging, AppServiceBot, RoomBridgeStoreEntry } from "matrix-appservice-bridge";
+    MatrixUser, UserBridgeStore, RoomBridgeStore, Logger, AppServiceBot, RoomBridgeStoreEntry } from "matrix-appservice-bridge";
 import { Util } from "../Util";
 import { MROOM_TYPES, IRemoteRoomData, IRemoteGroupData,
     MUSER_TYPE_ACCOUNT, MUSER_TYPES, MROOM_TYPE_UADMIN, MROOM_TYPE_GROUP,
@@ -10,7 +10,7 @@ import { IAccountMinimal } from "../bifrost/Events";
 import { IStore } from "./Store";
 import { BifrostRemoteUser } from "./BifrostRemoteUser";
 
-const log = Logging.get("NeDBStore");
+const log = new Logger("NeDBStore");
 
 export class NeDBStore implements IStore {
     private roomStore: RoomBridgeStore;
@@ -97,6 +97,11 @@ export class NeDBStore implements IStore {
         return users.filter((u) => u.isRemote === false && u.protocolId === protocolId);
     }
 
+    public async getAllAccountsForMatrixUser(userId: string): Promise<BifrostRemoteUser[]> {
+        const users = await this.getRemoteUsersFromMxId(userId);
+        return users.filter((u) => u.isRemote === false);
+    }
+
     public async getGroupRoomByRemoteData(remoteData: IRemoteRoomData|IRemoteGroupData) {
         const remoteEntries = await this.roomStore.getEntriesByRemoteRoomData(remoteData as Record<string, unknown>);
         if (remoteEntries !== null && remoteEntries.length > 0) {
@@ -119,6 +124,14 @@ export class NeDBStore implements IStore {
             return null;
         }
         return suitableEntries;
+    }
+
+    public async getAllIMRoomsForAccount(matrixUserId: string, protocolId: string): Promise<RoomBridgeStoreEntry[]> {
+        const remoteEntries = await this.roomStore.getEntriesByRemoteRoomData({
+            matrixUser: matrixUserId,
+            protocol_id: protocolId,
+        } as IRemoteImData as Record<string, unknown>);
+        return remoteEntries.filter((e) => e.matrix?.get("type") === MROOM_TYPE_IM);
     }
 
     public async getAdminRoom(matrixUserId: string): Promise<string|null> {

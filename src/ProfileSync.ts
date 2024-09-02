@@ -2,16 +2,15 @@ import { IBifrostAccount, IProfileProvider } from "./bifrost/Account";
 import * as _fs from "fs";
 import * as path from "path";
 import { BifrostProtocol } from "./bifrost/Protocol";
-import { Logging, MatrixUser, Bridge } from "matrix-appservice-bridge";
+import { Logger, MatrixUser, Bridge } from "matrix-appservice-bridge";
 import { Config } from "./Config";
 import { IStore} from "./store/Store";
 import { BifrostRemoteUser } from "./store/BifrostRemoteUser";
-const log = Logging.get("ProfileSync");
+
+const log = new Logger("ProfileSync");
 
 export class ProfileSync {
-    constructor(private bridge: Bridge, private config: Config, private store: IStore) {
-
-    }
+    constructor(private bridge: Bridge, private config: Config, private store: IStore) { }
 
     public async updateProfile(
         protocol: BifrostProtocol,
@@ -64,19 +63,30 @@ export class ProfileSync {
             remoteProfileSet.avatar_uri = buddy.icon_path;
         }
 
-        const intent = this.bridge.getIntent(matrixUser.getId());
+        const errors: Error[] = [];
 
-        if (remoteProfileSet.nick && matrixUser.get("displayname") !== remoteProfileSet.nick) {
-            log.debug(`Got a nick "${remoteProfileSet.nick}", setting`);
-            await intent.setDisplayName(remoteProfileSet.nick);
-            matrixUser.set("displayname", remoteProfileSet.nick);
-        } else if (!matrixUser.get("displayname") && remoteProfileSet.name) {
-            log.debug(`Got a name "${remoteProfileSet.name}", setting`);
-            // Don't ever set the name (ugly) over the nick unless we have never set it.
-            // Nicks come and go depending on the libpurple cache and whether the user
-            // is online (in XMPPs case at least).
-            await intent.setDisplayName(remoteProfileSet.name);
-            matrixUser.set("displayname", remoteProfileSet.name);
+        const intent = this.bridge.getIntent(matrixUser.getId());
+        {
+            let displayName: string | undefined;
+            if (remoteProfileSet.nick && matrixUser.get("displayname") !== remoteProfileSet.nick) {
+                log.debug(`Got a nick "${remoteProfileSet.nick}", setting`);
+                displayName = remoteProfileSet.nick;
+            } else if (!matrixUser.get("displayname") && remoteProfileSet.name) {
+                log.debug(`Got a name "${remoteProfileSet.name}", setting`);
+                // Don't ever set the name (ugly) over the nick unless we have never set it.
+                // Nicks come and go depending on the libpurple cache and whether the user
+                // is online (in XMPPs case at least).
+                displayName = remoteProfileSet.name;
+            }
+            if (displayName !== undefined) {
+                try {
+                    await intent.setDisplayName(displayName);
+                    matrixUser.set("displayname", displayName);
+                } catch (e) {
+                    log.error("Failed to set display_name for user:", e);
+                    errors.push(e);
+                }
+            }
         }
 
         if (remoteProfileSet.avatar_uri && matrixUser.get("avatar_url") !== remoteProfileSet.avatar_uri) {
@@ -91,9 +101,14 @@ export class ProfileSync {
                 matrixUser.set("avatar_url", remoteProfileSet.avatar_uri);
             } catch (e) {
                 log.error("Failed to update avatar_url for user:", e);
+                errors.push(e);
             }
         }
         await this.store.setMatrixUser(matrixUser);
+
+        if (errors.length) {
+            throw new AggregateError(errors, "Failed to fully update profile for user");
+        }
     }
 
     private async getOrCreateStoreUsers(protocol: BifrostProtocol, senderId: string)

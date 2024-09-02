@@ -1,4 +1,4 @@
-import { AppServiceBot, Logging, RemoteRoom } from "matrix-appservice-bridge";
+import { AppServiceBot, Intent, Logger, RemoteRoom } from "matrix-appservice-bridge";
 import { IBifrostInstance } from "./bifrost/Instance";
 import { IAccountEvent, IChatJoinProperties } from "./bifrost/Events";
 import { IStore } from "./store/Store";
@@ -7,7 +7,6 @@ import { Util } from "./Util";
 import { Deduplicator } from "./Deduplicator";
 import { ProtoHacks } from "./ProtoHacks";
 import { GatewayHandler } from "./GatewayHandler";
-const log = Logging.get("RoomSync");
 
 interface IRoomMembership {
     room_name: string;
@@ -18,6 +17,7 @@ interface IRoomMembership {
 const SYNC_RETRY_MS = 100;
 const MAX_SYNCS = 8;
 const JOINLEAVE_TIMEOUT = 60000;
+const log = new Logger("RoomSync");
 
 export class RoomSync {
     private accountRoomMemberships: Map<string, IRoomMembership[]>;
@@ -27,7 +27,7 @@ export class RoomSync {
         private store: IStore,
         private deduplicator: Deduplicator,
         private gateway: GatewayHandler,
-        private intent: any,
+        private intent: Intent,
     ) {
         this.accountRoomMemberships = new Map();
         this.bifrost.on("account-signed-on", this.onAccountSignedin.bind(this));
@@ -37,7 +37,7 @@ export class RoomSync {
         return this.accountRoomMemberships.get(user);
     }
 
-    public async sync(bot: any) {
+    public async sync(bot: AppServiceBot) {
         log.info("Beginning sync");
         try {
             await this.syncAccountsToGroupRooms(bot);
@@ -96,10 +96,14 @@ export class RoomSync {
             const isGateway = room.remote.get<boolean>("gateway");
             if (isGateway) {
                 // The gateway handler syncs via roomState.
-                this.gateway.initialMembershipSync(room);
+                try {
+                    await this.gateway.initialMembershipSync(room);
+                } catch (ex) {
+                    log.warn(`Failed to sync gateway membership for room ${roomId}`);
+                }
                 return;
             }
-            let members: {[userId: string]: {display_name: string}};
+            let members: {[userId: string]: {display_name?: string}};
             try {
                 members = await this.getJoinedMembers(bot, roomId);
             } catch (ex) {
@@ -182,8 +186,8 @@ export class RoomSync {
             try {
                 if (membership.membership === "join") {
                     log.info(`${i}/${reconsToMake} JOIN ${remoteId} -> ${membership.room_name}`);
-                    await acct!.joinChat(membership.params, this.bifrost, JOINLEAVE_TIMEOUT, false);
-                    acct!.setJoinPropertiesForRoom(membership.room_name, membership.params);
+                    await acct.joinChat(membership.params, this.bifrost, JOINLEAVE_TIMEOUT, false);
+                    acct.setJoinPropertiesForRoom?.(membership.room_name, membership.params);
                 } else {
                     log.info(`${i}/${reconsToMake} LEAVE ${remoteId} -> ${membership.room_name}`);
                     await acct!.rejectChat(membership.params);

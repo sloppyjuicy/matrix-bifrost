@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 import { Pool } from "pg";
-import { MatrixRoom, RemoteRoom, MatrixUser, Logging, RoomBridgeStoreEntry } from "matrix-appservice-bridge";
+import { MatrixRoom, RemoteRoom, MatrixUser, Logger, RoomBridgeStoreEntry } from "matrix-appservice-bridge";
 import { IRemoteRoomData, IRemoteGroupData, MROOM_TYPES,
     IRemoteImData, IRemoteUserAdminData, MROOM_TYPE_IM } from "../Types";
 import { BifrostProtocol } from "../../bifrost/Protocol";
@@ -25,7 +25,7 @@ import { IConfigDatastore } from "../../Config";
 import { IStore } from "../Store";
 import { Util } from "../../Util";
 
-const log = Logging.get("PgDatstore");
+const log = new Logger("PgDatstore");
 
 export interface PgDataStoreOpts {
     min: number;
@@ -146,10 +146,25 @@ export class PgDataStore implements IStore {
         ));
     }
 
-    public async getAccountsForMatrixUser(userId: string, protocolId: string): Promise<BifrostRemoteUser[]> {
+    public async getAllAccountsForMatrixUser(userId: string): Promise<BifrostRemoteUser[]> {
         const res = await this.pgPool.query(
             "SELECT * FROM accounts WHERE user_id = $1",
             [ userId ],
+        );
+        return res.rows.map((row) => new BifrostRemoteUser(
+            Util.createRemoteId(row.protocol_id, row.username),
+            row.username,
+            row.protocol_id,
+            false,
+            "",
+            row.extra_data,
+        ));
+    }
+
+    public async getAccountsForMatrixUser(userId: string, protocolId: string): Promise<BifrostRemoteUser[]> {
+        const res = await this.pgPool.query(
+            "SELECT * FROM accounts WHERE user_id = $1 AND protocol_id = $2",
+            [ userId, protocolId ],
         );
         return res.rows.map((row) => new BifrostRemoteUser(
             Util.createRemoteId(row.protocol_id, row.username),
@@ -223,6 +238,22 @@ export class PgDataStore implements IStore {
             }),
             data: {}
         };
+    }
+
+    public async getAllIMRoomsForAccount(matrixUserId: string, protocolId: string): Promise<RoomBridgeStoreEntry[]> {
+        const res = await this.pgPool.query(
+            "SELECT room_id, remote_id FROM im_rooms WHERE user_id = $1 AND protocol_id = $2",
+            [ matrixUserId, protocolId ],
+        );
+        return res.rows.map(row => ({
+            matrix: new MatrixRoom(row.room_id, { extras: { type: MROOM_TYPE_IM } }),
+            remote: new RemoteRoom("", {
+                matrixUser: matrixUserId,
+                protocol_id: protocolId,
+                recipient: row.remote_id,
+            }),
+            data: {}
+        }));
     }
 
     public async getUsernameMxidForProtocol(protocol: BifrostProtocol): Promise<{ [mxid: string]: string; }> {

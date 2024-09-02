@@ -5,18 +5,28 @@ required: ["bridge", "datastore", "purple", "portals"]
 properties:
     bridge:
         type: object
-        required: ["domain", "homeserverUrl", "userPrefix"]
+        required: ["domain", "homeserverUrl", "userPrefix", "mediaProxy"]
         properties:
           domain:
             type: string
           homeserverUrl:
             type: string
-          mediaserverUrl:
-            type: string
           userPrefix:
             type: string
           appservicePort:
             type: number
+          mediaProxy:
+            type: "object"
+            properties:
+              signingKeyPath:
+                type: "string"
+              ttlSeconds:
+                type: "integer"
+              bindPort:
+                type: "integer"
+              publicUrl:
+                type: "string"
+            required: ["signingKeyPath", "ttlSeconds", "bindPort", "publicUrl"]
     datastore:
         required: ["engine"]
         type: "object"

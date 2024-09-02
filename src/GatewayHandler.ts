@@ -1,6 +1,6 @@
 import { IGatewayJoin, IGatewayRoomQuery, IGatewayPublicRoomsQuery, IChatJoinProperties } from "./bifrost/Events";
 import { IBifrostInstance } from "./bifrost/Instance";
-import { Bridge, Logging, Intent, RoomBridgeStoreEntry, WeakEvent } from "matrix-appservice-bridge";
+import { Bridge, Logger, Intent, RoomBridgeStoreEntry, WeakEvent } from "matrix-appservice-bridge";
 import { Config } from "./Config";
 import { IStore } from "./store/Store";
 import { MROOM_TYPE_GROUP, IRemoteGroupData } from "./store/Types";
@@ -10,7 +10,7 @@ import { IGatewayRoom } from "./bifrost/Gateway";
 import { MatrixMembershipEvent } from "./MatrixTypes";
 import { BifrostRemoteUser } from "./store/BifrostRemoteUser";
 
-const log = Logging.get("GatewayHandler");
+const log = new Logger("GatewayHandler");
 
 /**
  * Responsible for handling querys & events on behalf of a gateway style bridge.
@@ -33,7 +33,6 @@ const log = Logging.get("GatewayHandler");
  * for XMPP.js).
  */
 export class GatewayHandler {
-    private aliasCache: Map<string, IGatewayRoom> = new Map();
     private roomIdCache: Map<string, Promise<IGatewayRoom>> = new Map();
 
     constructor(
@@ -58,7 +57,7 @@ export class GatewayHandler {
         }
         const promise = (async () => {
             log.debug(`Getting state for ${roomId}`);
-            const state = await intent.roomState(roomId, false);
+            const state = await intent.roomState(roomId) as WeakEvent[];
             log.debug(`Got state for ${roomId}`);
             const nameEv = state.find((e) => e.type === "m.room.name");
             const topicEv = state.find((e) => e.type === "m.room.topic");
@@ -66,15 +65,15 @@ export class GatewayHandler {
             const membership = state.filter((e) => e.type === "m.room.member").map((e: WeakEvent) => (
                 {
                     isRemote: bot.isRemoteUser(e.sender),
-                    stateKey: e.state_key,
-                    displayname: e.content.displayname,
-                    sender: e.sender,
-                    membership: e.content.membership,
+                    stateKey: e.state_key as string,
+                    displayname: e.content.displayname as string,
+                    sender: e.sender as string,
+                    membership: e.content.membership as string,
                 }
-            ))
+            ));
             const room: IGatewayRoom = {
-                name: nameEv ? nameEv.content.name : "",
-                topic: topicEv ? topicEv.content.topic : "",
+                name: typeof nameEv?.content?.name === "string" ? nameEv.content.name : "",
+                topic: nameEv?.content?.topic === "string" ? nameEv.content.topic : "",
                 roomId,
                 membership,
             };
@@ -97,7 +96,7 @@ export class GatewayHandler {
         this.purple.gateway.sendMatrixMessage(chatName, sender, body, room);
     }
 
-    public async sendStateEvent(chatName: string, sender: string, ev: any , context: RoomBridgeStoreEntry) {
+    public async sendStateEvent(chatName: string, sender: string, ev: any, context: RoomBridgeStoreEntry) {
         if (!this.purple.gateway) {
             return;
         }
@@ -190,8 +189,14 @@ export class GatewayHandler {
                 throw Error("This room has been denied");
             }
             await intent.ensureRegistered();
+            let profileUpdateSuccess = false;
             if (this.config.tuning.waitOnProfileBeforeSend) {
-                await this.profileSync.updateProfile(protocol, data.sender, this.purple.gateway);
+                try {
+                    await this.profileSync.updateProfile(protocol, data.sender, this.purple.gateway);
+                    profileUpdateSuccess = true;
+                } catch (e) {
+                    log.error(`Failed to update profile: ${e}`);
+                }
             }
             log.info(`Attempting to join ${data.roomAlias}`)
             roomId = await intent.join(data.roomAlias);
@@ -199,9 +204,14 @@ export class GatewayHandler {
                 throw Error("This room has been denied");
             }
             if (!this.config.tuning.waitOnProfileBeforeSend) {
-                await this.profileSync.updateProfile(protocol, data.sender, this.purple.gateway);
+                try {
+                    await this.profileSync.updateProfile(protocol, data.sender, this.purple.gateway);
+                    profileUpdateSuccess = true;
+                } catch (e) {
+                    log.error(`Failed to update profile: ${e}`);
+                }
             }
-            if (data.nick) {
+            if (data.nick && profileUpdateSuccess) {
                 // Set the user's displayname in the room to their nickname.
                 // Do this after a short delay, so that we don't have a race on
                 // the server setting the global displayname.
@@ -236,9 +246,9 @@ export class GatewayHandler {
     private async handleRoomQuery(ev: IGatewayRoomQuery) {
         log.info(`Trying to discover ${ev.roomAlias}`);
         try {
-            const res = await this.bridge.getIntent().getClient().resolveRoomAlias(ev.roomAlias);
-            log.info(`Found ${res.room_id}`);
-            ev.result(null, res.room_id);
+            const roomId = await this.bridge.getIntent().matrixClient.resolveRoom(ev.roomAlias);
+            log.info(`Found ${roomId}`);
+            ev.result(null, roomId);
         } catch (ex) {
             log.warn("Room not found:", ex);
             ev.result(Error("Room not found"));
@@ -251,7 +261,7 @@ export class GatewayHandler {
             // XXX: We should check to see if the room exists in our cache.
             // We have to join the room, as doing a lookup would not prompt a bridge like freenode
             // to intervene.
-            let res = await this.bridge.getIntent().getClient().publicRooms({
+            let res = await this.bridge.getIntent().matrixClient.doRequest('GET', '/_matrix/client/v3/publicRooms', {
                 server: ev.homeserver || undefined,
                 filter: {
                     generic_search_term: ev.searchString,

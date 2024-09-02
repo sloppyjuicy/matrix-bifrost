@@ -3,7 +3,7 @@ import { helper, plugins, messaging, Conversation } from "node-purple";
 import { EventEmitter } from "events";
 import { PurpleAccount } from "./PurpleAccount";
 import { IBifrostInstance } from "../bifrost/Instance";
-import { Logging } from "matrix-appservice-bridge";
+import { Logger } from "matrix-appservice-bridge";
 import * as path from "path";
 import { IConfigPurple } from "../Config";
 import { IUserInfo, IConversationEvent } from "../bifrost/Events";
@@ -11,7 +11,7 @@ import { BifrostProtocol } from "../bifrost/Protocol";
 import { promises as fs } from "fs";
 import { PurpleProtocol } from "./PurpleProtocol";
 
-const log = Logging.get("PurpleInstance");
+const log = new Logger("PurpleInstance");
 
 const DEFAULT_PLUGIN_DIR = "/usr/lib/purple-2";
 export interface IPurpleBackendOpts {
@@ -121,10 +121,6 @@ export class PurpleInstance extends EventEmitter implements IBifrostInstance {
         );
     }
 
-    public getBuddyFromChat(conv: Conversation, buddyName: string) {
-        messaging.getBuddyFromConv(conv.handle, buddyName);
-    }
-
     public getNickForChat(conv: Conversation): string {
         return messaging.getNickForChat(conv.handle);
     }
@@ -191,7 +187,7 @@ export class PurpleInstance extends EventEmitter implements IBifrostInstance {
                 }
             }
             if (["received-chat-msg", "received-im-msg"].includes(evt.eventName)) {
-                const rawEvent = evt as any;
+                const rawEvent = evt as Record<string, unknown>;
                 evt = Object.assign(evt, {
                     message: {
                         body: rawEvent.message,

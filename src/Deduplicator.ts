@@ -1,6 +1,7 @@
-import { Logging } from "matrix-appservice-bridge";
+import { Logger } from "matrix-appservice-bridge";
 import leven from "leven";
-const log = Logging.get("Deduplicator");
+
+const log = new Logger("Deduplicator");
 
 const LEVEN_THRESHOLD = 0.1;
 
@@ -93,14 +94,13 @@ export class Deduplicator {
         }
     }
 
-    public checkAndRemove(roomName: string, sender: string, body: string) {
-        const h = Deduplicator.hashMessage(roomName, sender, body);
+    public async checkAndRemove(roomName: string, sender: string, body: string) {
         const start = `${sender}/${roomName}/`;
         const index = this.expectedMessages.findIndex((hash) => {
             if (!hash.startsWith(start)) {
                 return false;
             }
-            hash = hash.substr(start.length);
+            hash = hash.slice(start.length);
             const l = leven(hash, body) / hash.length;
             return l <= LEVEN_THRESHOLD;
         });

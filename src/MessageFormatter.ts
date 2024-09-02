@@ -1,11 +1,10 @@
 import { BifrostProtocol } from "./bifrost/Protocol";
 import { PRPL_S4B, PRPL_XMPP } from "./ProtoHacks";
 import { Parser } from "htmlparser2";
-import { Intent, Logging } from "matrix-appservice-bridge";
+import { Intent, Logger, MediaProxy } from "matrix-appservice-bridge";
 import { IConfigBridge } from "./Config";
-import request from "axios";
 import { IMatrixMsgContents, MatrixMessageEvent } from "./MatrixTypes";
-const log = Logging.get("MessageFormatter");
+
 
 export interface IBasicProtocolMessage {
     body: string;
@@ -13,7 +12,7 @@ export interface IBasicProtocolMessage {
     id?: string;
     original_message?: string;
     opts?: {
-        attachments?: IMessageAttachment[];
+        attachments?: (IMessageAttachment|IMxcAttachment)[];
     };
 }
 
@@ -23,9 +22,18 @@ export interface IMessageAttachment {
     size?: number;
 }
 
+export interface IMxcAttachment {
+    mxcUrl: string;
+    mimetype: string;
+    size: number;
+    filename: string;
+}
+
+const log = new Logger("MessageFormatter");
+
 export class MessageFormatter {
 
-    public static matrixEventToBody(event: MatrixMessageEvent, config: IConfigBridge): IBasicProtocolMessage {
+    public static async matrixEventToBody(event: MatrixMessageEvent, config: IConfigBridge, mediaProxy: MediaProxy): Promise<IBasicProtocolMessage> {
         let content = event.content;
         const originalMessage = event.content["m.relates_to"]?.event_id;
         const formatted: {type: string, body: string}[] = [];
@@ -43,15 +51,13 @@ export class MessageFormatter {
             return {body: `/me ${content.body}`, formatted, id: event.event_id};
         }
         if (["m.file", "m.image", "m.video"].includes(event.content.msgtype) && event.content.url) {
-            const uriBits = event.content.url.substr("mxc://".length).split("/");
-            const url = (config.mediaserverUrl ? config.mediaserverUrl : config.homeserverUrl).replace(/\/$/, "");
             return {
                 body: content.body,
                 id: event.event_id,
                 opts: {
                     attachments: [
                         {
-                            uri: `${url}/_matrix/media/v1/download/${uriBits[0]}/${uriBits[1]}`,
+                            uri: (await mediaProxy.generateMediaUrl(event.content.url)).toString(),
                             mimetype: event.content.info?.mimetype,
                             size: event.content.info?.size,
                         },
@@ -66,6 +72,20 @@ export class MessageFormatter {
         return newMsg;
     }
 
+    public static async getMaxUploadBytes(intent: Intent) {
+        try {
+            const config = await intent.matrixClient.doRequest('GET', '/_matrix/media/r0/config');
+            const size = config['m.upload.size'];
+            if (typeof size !== "number") {
+                throw Error(`m.upload.size was '${size}'`)
+            }
+            return config['m.upload.size'];
+        } catch (ex) {
+            log.warn('Failed to max upload size', ex);
+            return -1;
+        }
+    }
+
     public static async messageToMatrixEvent(msg: IBasicProtocolMessage, protocol: BifrostProtocol, intent?: Intent):
     Promise<IMatrixMsgContents> {
         log.debug("Got message:", msg);
@@ -76,7 +96,7 @@ export class MessageFormatter {
         if (msg.id) {
             matrixMsg.remote_id = msg.id;
         }
-        const hasAttachment = msg.opts && msg.opts.attachments && msg.opts.attachments.length;
+        const attachment = msg.opts && msg.opts.attachments && msg.opts.attachments[0];
         if ([PRPL_XMPP, PRPL_S4B].includes(protocol.id)) {
             if (matrixMsg.body.startsWith("<")) {
                 // It *might* be HTML so go for it.
@@ -110,55 +130,50 @@ export class MessageFormatter {
         }
 
         // XXX: This currently only handles one attachment
-        if (hasAttachment) {
+        if (attachment) {
             try {
-                if (!intent) {
-                    throw new Error("No intent given");
+                if ('uri' in attachment) {
+                    if (!attachment.uri.startsWith("http")) {
+                        throw Error("Don't know how to handle attachment for message, not a http format uri");
+                    }
+                    const file = await fetch(attachment.uri);
+                    // Use the headers if a type isn't given.
+                    if (!attachment.mimetype) {
+                        attachment.mimetype = file.headers.get("content-type");
+                    }
+                    if (!attachment.size) {
+                        attachment.size = parseInt(file.headers.get("content-length") ?? "0", 10);
+                    }
+                    const maxSize = await this.getMaxUploadBytes(intent);
+                    if (attachment.size && maxSize > -1 && maxSize < attachment.size!) {
+                        log.info("File is too large, linking instead");
+                        matrixMsg.body = attachment.uri;
+                        return matrixMsg;
+                    }
+                    const buffer = Buffer.from(await file.arrayBuffer());
+                    log.info(`Uploading ${attachment.uri}...`);
+                    matrixMsg.url = await intent.uploadContent(buffer, {
+                        type: attachment.mimetype || "application/octect-stream",
+                    });
+                    matrixMsg.body = msg.body;
+                    matrixMsg.filename = attachment.uri.split("/").reverse()[0];
+                    matrixMsg.body = msg.body;
+                } else {
+                    matrixMsg.url = attachment.mxcUrl;
+                    matrixMsg.body = attachment.filename;
                 }
-                const attachment = msg.opts!.attachments![0];
-                if (!attachment.uri.startsWith("http")) {
-                    log.warn("Don't know how to handle attachment for message, not a http format uri");
-                    return matrixMsg;
-                }
-                const file = await request.get(attachment.uri, {
-                    responseType: "arraybuffer",
-                });
-                // Use the headers if a type isn't given.
-                if (!attachment.mimetype) {
-                    attachment.mimetype = file.headers["content-type"];
-                }
-                if (!attachment.size) {
-                    attachment.size = parseInt(file.headers["content-length"] || "0", 10);
-                }
-                const maxSize =
-                    (await intent.getClient().getMediaConfig().then((cfg) => cfg.m.upload.size).catch(() => -1));
-
-                if (attachment.size && maxSize > -1 && maxSize < attachment.size!) {
-                    log.info("File is too large, linking instead");
-                    matrixMsg.body = attachment.uri;
-                    return matrixMsg;
-                }
-
-                log.info(`Uploading ${attachment.uri}...`);
-                const mxcurl = await intent.uploadContent(file.data, {
-                    includeFilename: false,
-                    type: attachment.mimetype || "application/octect-stream",
-                });
-                matrixMsg.url = mxcurl;
-                matrixMsg.body = msg.body;
-                matrixMsg.filename = attachment.uri.split("/").reverse()[0];
                 matrixMsg.info = {
-                    mimetype: attachment.mimetype!,
-                    size: attachment.size || 0,
+                    mimetype: attachment.mimetype,
+                    size: attachment.size,
                 };
-                if (!attachment.mimetype) {
-                    matrixMsg.msgtype = "m.file";
-                } else if (attachment.mimetype.startsWith("image")) {
+                if (attachment.mimetype?.startsWith("image")) {
                     matrixMsg.msgtype = "m.image";
-                } else if (attachment.mimetype.startsWith("video")) {
+                } else if (attachment.mimetype?.startsWith("video")) {
                     matrixMsg.msgtype = "m.video";
-                } else if (attachment.mimetype.startsWith("audio")) {
+                } else if (attachment.mimetype?.startsWith("audio")) {
                     matrixMsg.msgtype = "m.audio";
+                } else {
+                    matrixMsg.msgtype = "m.file";
                 }
             } catch (ex) {
                 log.warn("Failed to handle attachment:", ex);
